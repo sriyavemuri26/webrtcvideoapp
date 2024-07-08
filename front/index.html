@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebRTC Video Conferencing Application</title>
+    <link rel="icon" href="favicon.ico" type="image/x-icon" />
+    <style>
+        body {
+            /* General styles for the body */
+            font-family: Arial, sans-serif;
+            background-color: #282626;
+            color: #f48989;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-evenly;
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        h1 {
+            /* Margin below h1 heading */
+            margin-bottom: 20px;
+        }
+
+        #videoContainer {
+            /* Container for video elements */
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-evenly;
+            gap: 20px;
+            width: 80%;
+            max-width: 1200px;
+            margin-bottom: 20px;
+        }
+
+        #localVideoContainer,
+        .remoteVideoWrapper {
+            /* Styling for video containers */
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 300px;
+        }
+
+        .remoteVideoWrapper {
+            /* Additional styles for remote video containers */
+            background-color: #fff;
+            margin: 0 5px 5px 0;
+        }
+
+        video {
+            /* Styling for video elements */
+            width: 100%;
+            height: auto;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            margin-left: 5px;
+            margin-right: 5px;
+            max-width: 280px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>WebRTC Video Conferencing Application</h1>
+    <div id="videoContainer">
+        <div id="localVideoContainer">
+            <video id="localVideo" autoplay muted playsinline></video>
+        </div>
+        <div id="remoteVideos"></div>
+    </div>
+
+    <script>
+
+        // Initialize a WebSocket connection
+        const ws = new WebSocket("ws://localhost:8080/ws");
+        const localVideo = document.getElementById("localVideo");
+        const remoteVideoContainer = document.getElementById("remoteVideos");
+
+        // Set Local and Remote streams to null
+        let localStream = null;
+        let remoteStream = null;
+
+        // Create a queue for storing incoming signals
+        let signalQueue = [];
+
+        // Create dictionaries for peerConnections and arrays of ICECandidates
+        let peerConnections = {};
+        let iceCandidates = {};
+
+        // Variable to store the clientID
+        let clientID = null;
+
+        // Flag to identify if local media is successfully gathered
+        let GUMdone = false;
+
+        // WebSocket on connection
+        ws.onopen = function () {
+            console.log("WebSocket connected to the server!");
+            // Get User Media and process signals from queue
+            start().then(() => {
+                GUMdone = true;
+                processSignalQueue();
+            });
+        };
+
+        // Function to Get User Media
+        async function start() {
+            try {
+                console.log("Getting user media");
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true,
+                });
+                localVideo.srcObject = localStream;
+            } catch (error) {
+                console.error("Error accessing media devices:", error);
+            }
+        }
+
+        // On event, add incoming signals to the signalQueue
+        ws.onmessage = function (event) {
+            const signal = JSON.parse(event.data);
+
+            // Assign ClientID upon receiving the signal
+            if (signal.type === "client_id") {
+                clientID = signal.data;
+                console.log("Received client ID:", clientID);
+            } else {
+                // Add incoming signals to queue
+                signalQueue.push(signal);
+            }
+
+            // Process signals if the Get User Media flag is set to true
+            if (GUMdone) {
+                processSignalQueue();
+            }
+        };
+
+        // Loop through the signals and call the handleSignal function
+        function processSignalQueue() {
+            while (signalQueue.length > 0) {
+                const signal = signalQueue.shift();
+                handleSignal(signal);
+            }
+        }
+
+        // Call appropriate functions based on signal type
+        async function handleSignal(signal) {
+
+            if (signal.type === "create_pc") {
+                createPeerConnection(signal.to);
+            }
+
+            if (signal.type === "create_offer") {
+                createOffer(signal);
+            }
+
+            if (signal.type === "offer") {
+                console.log("Received offer from: ", signal.from);
+                createAnswer(signal);
+            }
+
+            // Set remote description of the respective peerConnection
+            // when receiving the answer signal
+            if (signal.type === "answer") {
+                console.log("Received answer from: ", signal.from);
+                const peerConnection = peerConnections[signal.from]
+                await peerConnection.setRemoteDescription(
+                    new RTCSessionDescription(signal.data)
+                );
+            }
+
+            // Loop through the ICECandidates array and add to the 
+            // appropriate peerConnection
+            if (signal.type === "ice_candidates") {
+                console.log("Received ICE candidates from: ", signal.from);
+                const candidates = signal.iceCandidates;
+                const peerConnection = peerConnections[signal.from]
+
+                for (const candidate of candidates) {
+                    try {
+                        await peerConnection.addIceCandidate(
+                            new RTCIceCandidate(candidate)
+                        );
+                        console.log("ICE candidate added:", candidate);
+                    } catch (error) {
+                        console.error("Error adding ICE candidate:", error);
+                    }
+                }
+            }
+
+            if (signal.type === "client_disconnect") {
+                console.log("Client disconnected:", signal.from);
+                removeClient(signal.from);
+            }
+        }
+
+        // Create a Peer Connection
+        async function createPeerConnection(peerID) {
+            console.log("Setting up PeerConnection");
+            // Pass STUN servers to generate ICE Candidates
+            const config = {
+                iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }],
+            };
+
+            // Create a new RTCPeerConnection with the configuration
+            const peerConnection = new RTCPeerConnection(config);
+
+            // Intialize a remoteStream
+            const remoteStream = new MediaStream();
+            console.log("Created peer connection");
+
+            // Add tracks from the local stream to the PeerConnection
+            localStream.getTracks().forEach((track) => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            // If an ICECandidates array does not exist for the
+            // given peerID, create new
+            if (!iceCandidates[peerID]) {
+                iceCandidates[peerID] = [];
+            }
+
+            // On receiving ice candidate, add it to the array
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    iceCandidates[peerID].push(event.candidate);
+                }
+            };
+
+            // On receiving remote track, add the video to the remoteStream
+            peerConnection.ontrack = (event) => {
+                console.log("Track received from", peerID, ":", event.track);
+
+                remoteStream.addTrack(event.track);
+
+                let remoteVideo = document.getElementById(`remoteVideo-${peerID}`);
+                if (!remoteVideo) {
+                    remoteVideo = document.createElement("video");
+                    remoteVideo.autoplay = true;
+                    remoteVideo.playsinline = true;
+                    remoteVideo.id = `remoteVideo-${peerID}`;
+                    remoteVideo.classList.add("remote-video");
+                    remoteVideoContainer.appendChild(remoteVideo);
+                }
+
+                remoteVideo.srcObject = remoteStream;
+            };
+
+            // Add the peerConnection to the dictionary
+            peerConnections[peerID] = peerConnection;
+            // Process signals
+            processSignalQueue();
+        }
+
+        // Create an Offer
+        async function createOffer(signal) {
+            try {
+                console.log("Creating offer");
+                // Get the PeerConnection created for signal.to 
+                const peerConnection = peerConnections[signal.to];
+                // Create an offer
+                const offer = await peerConnection.createOffer();
+                // Set local description
+                await peerConnection.setLocalDescription(offer);
+
+                // Send a signal to the signaling server with 
+                // the offer we just created
+                ws.send(
+                    JSON.stringify({
+                        from: clientID,
+                        type: "offer",
+                        to: signal.to,
+                        data: peerConnection.localDescription,
+                    })
+                );
+
+                // Wait for ICE Candidates to finish gathering
+                await waitForIceCandidates(peerConnection);
+
+                // Send ICE Candidates array to the signaling server
+                ws.send(
+                    JSON.stringify({
+                        from: clientID,
+                        type: "ice_candidates",
+                        to: signal.to,
+                        iceCandidates: iceCandidates[signal.to],
+                    })
+                );
+            } catch (error) {
+                console.error("Error creating offer:", error);
+            }
+        }
+
+        // Create an Answer
+        async function createAnswer(signal) {
+            try {
+
+                console.log("Creating answer");
+                // Get the PeerConnection created for signal.from 
+                const peerConnection = peerConnections[signal.from]
+                // Set the remote description
+                await peerConnection.setRemoteDescription(
+                    new RTCSessionDescription(signal.data)
+                );
+
+                // Create an Answer
+                const answer = await peerConnection.createAnswer();
+                // Set local description
+                await peerConnection.setLocalDescription(answer);
+
+                // Send the answer to the signaling server
+                ws.send(
+                    JSON.stringify({
+                        from: clientID,
+                        type: "answer",
+                        to: signal.from,
+                        data: peerConnection.localDescription,
+                    })
+                );
+
+                // Wait for ICE Candidates to finish gathering
+                await waitForIceCandidates(peerConnection);
+
+                // Send the ICE Cadidates to the signaling server
+                ws.send(
+                    JSON.stringify({
+                        from: clientID,
+                        type: "ice_candidates",
+                        to: signal.from,
+                        iceCandidates: iceCandidates[signal.from],
+                    })
+                );
+            } catch (error) {
+                console.error("Error creating answer:", error);
+            }
+        }
+
+        // Function the returns a promise when gathering of ICECandidates is complete
+        function waitForIceCandidates(peerConnection) {
+            return new Promise((resolve, reject) => {
+                peerConnection.onicegatheringstatechange = function (event) {
+                    if (peerConnection.iceGatheringState === 'complete') {
+                        resolve();
+                    }
+                };
+            });
+        }
+
+        // Remove the remoteVideo and delete the PeerConnection from the dictionaries
+        function removeClient(peerID) {
+            console.log("Removing client:", peerID);
+            const remoteVideo = document.getElementById(`remoteVideo-${peerID}`);
+            if (remoteVideo) {
+                remoteVideo.srcObject = null;
+                remoteVideo.remove();
+                console.log(`Removed video element for client: ${peerID}`);
+            }
+            delete peerConnections[peerID];
+            delete iceCandidates[peerID];
+        }
+
+    </script>
+</body>
+
+</html>

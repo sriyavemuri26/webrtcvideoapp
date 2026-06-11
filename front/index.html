@@ -113,8 +113,12 @@
             try {
                 console.log("Getting user media");
                 localStream = await navigator.mediaDevices.getUserMedia({
-                    video: true,
-                    audio: true,
+                    video: {
+                        width: { ideal: 320 },  
+                        height: { ideal: 240 },
+                        frameRate: { ideal: 15 }
+                    },
+                    audio: true
                 });
                 localVideo.srcObject = localStream;
             } catch (error) {
@@ -247,9 +251,11 @@
                     remoteVideo.id = `remoteVideo-${peerID}`;
                     remoteVideo.classList.add("remote-video");
                     remoteVideoContainer.appendChild(remoteVideo);
+
+                    remoteVideo.srcObject = new MediaStream();
                 }
 
-                remoteVideo.srcObject = remoteStream;
+                remoteVideo.srcObject.addTrack(event.track);
             };
 
             // Add the peerConnection to the dictionary

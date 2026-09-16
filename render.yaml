@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: webrtc-video-app
+    runtime: go
+    region: virginia 
+    plan: free
+    buildCommand: go build -o server main.go
+    startCommand: ./server
+    autoDeploy: true

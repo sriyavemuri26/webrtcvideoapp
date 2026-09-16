@@ -14,6 +14,7 @@ let signalQueue = [];
 // Create dictionaries for peerConnections and arrays of ICECandidates
 let peerConnections = {};
 let iceCandidates = {};
+let pendingCandidates = {};
 
 // Variable to store the clientID
 let clientID = null;
@@ -56,6 +57,7 @@ ws.onmessage = function (event) {
     // Assign ClientID upon receiving the signal
     if (signal.type === "client_id") {
         clientID = signal.data;
+        document.getElementById("server-badge").innerText = `Server ID: ${clientID.substring(0, 8)}`;
         console.log("Received client ID:", clientID);
     } else {
         // Add incoming signals to queue
@@ -69,37 +71,44 @@ ws.onmessage = function (event) {
 };
 
 // Loop through the signals and call the handleSignal function
-function processSignalQueue() {
+let isProcessingQueue = false;
+async function processSignalQueue() {
+    if (isProcessingQueue) return;
+    isProcessingQueue = true;
     while (signalQueue.length > 0) {
         const signal = signalQueue.shift();
-        handleSignal(signal);
+        await handleSignal(signal);
     }
+    isProcessingQueue = false;
 }
 
 // Call appropriate functions based on signal type
 async function handleSignal(signal) {
 
     if (signal.type === "create_pc") {
-        createPeerConnection(signal.to);
+        await createPeerConnection(signal.to);
     }
 
     if (signal.type === "create_offer") {
-        createOffer(signal);
+        await createOffer(signal);
     }
 
     if (signal.type === "offer") {
         console.log("Received offer from: ", signal.from);
-        createAnswer(signal);
+        await createAnswer(signal);
     }
 
     // Set remote description of the respective peerConnection
     // when receiving the answer signal
     if (signal.type === "answer") {
         console.log("Received answer from: ", signal.from);
-        const peerConnection = peerConnections[signal.from]
-        await peerConnection.setRemoteDescription(
-            new RTCSessionDescription(signal.data)
-        );
+        const peerConnection = peerConnections[signal.from];
+        if (peerConnection) {
+            await peerConnection.setRemoteDescription(
+                new RTCSessionDescription(signal.data)
+            );
+            await flushPendingCandidates(signal.from);
+        }
     }
 
     // Loop through the ICECandidates array and add to the 
@@ -107,17 +116,18 @@ async function handleSignal(signal) {
     if (signal.type === "ice_candidates") {
         console.log("Received ICE candidates from: ", signal.from);
         const candidates = signal.iceCandidates;
-        const peerConnection = peerConnections[signal.from]
+        const peerConnection = peerConnections[signal.from];
 
         for (const candidate of candidates) {
-            try {
-                await peerConnection.addIceCandidate(
-                    new RTCIceCandidate(candidate)
-                );
-                console.log("ICE candidate added:", candidate);
-            } catch (error) {
-                console.error("Error adding ICE candidate:", error);
-            }
+            // try {
+            //     await peerConnection.addIceCandidate(
+            //         new RTCIceCandidate(candidate)
+            //     );
+            //     console.log("ICE candidate added:", candidate);
+            // } catch (error) {
+            //     console.error("Error adding ICE candidate:", error);
+            // }
+            await addCandidateSafely(peerConnection, signal.from, candidate);
         }
     }
 
@@ -160,25 +170,19 @@ async function createPeerConnection(peerID) {
         }
     };
 
+    let remoteVideo = document.createElement("video");
+    remoteVideo.autoplay = true;
+    remoteVideo.playsinline = true;
+    remoteVideo.id = `remoteVideo-${peerID}`;
+    remoteVideo.classList.add("remote-video");
+    remoteVideoContainer.appendChild(remoteVideo);
+
+    remoteVideo.srcObject = remoteStream;
+
     // On receiving remote track, add the video to the remoteStream
     peerConnection.ontrack = (event) => {
         console.log("Track received from", peerID, ":", event.track);
-
         remoteStream.addTrack(event.track);
-
-        let remoteVideo = document.getElementById(`remoteVideo-${peerID}`);
-        if (!remoteVideo) {
-            remoteVideo = document.createElement("video");
-            remoteVideo.autoplay = true;
-            remoteVideo.playsinline = true;
-            remoteVideo.id = `remoteVideo-${peerID}`;
-            remoteVideo.classList.add("remote-video");
-            remoteVideoContainer.appendChild(remoteVideo);
-
-            remoteVideo.srcObject = new MediaStream();
-        }
-
-        remoteVideo.srcObject.addTrack(event.track);
     };
 
     // Add the peerConnection to the dictionary
@@ -237,6 +241,7 @@ async function createAnswer(signal) {
         await peerConnection.setRemoteDescription(
             new RTCSessionDescription(signal.data)
         );
+        await flushPendingCandidates(signal.from);
 
         // Create an Answer
         const answer = await peerConnection.createAnswer();
@@ -281,6 +286,34 @@ function waitForIceCandidates(peerConnection) {
     });
 }
 
+async function addCandidateSafely(peerConnection, peerID, candidateData) {
+    if (!peerConnection || !peerConnection.remoteDescription) {
+        pendingCandidates[peerID] = pendingCandidates[peerID] || [];
+        pendingCandidates[peerID].push(candidateData);
+        return;
+    }
+    try {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidateData));
+    } catch (error) {
+        console.error("Error adding ICE candidate:", error);
+    }
+}
+
+async function flushPendingCandidates(peerID) {
+    const peerConnection = peerConnections[peerID];
+    const queue = pendingCandidates[peerID];
+    if (peerConnection && queue && queue.length > 0) {
+        for (const candidateData of queue) {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidateData));
+            } catch (error) {
+                console.error("Error flushing candidate:", error);
+            }
+        }
+        delete pendingCandidates[peerID];
+    }
+}
+
 // Remove the remoteVideo and delete the PeerConnection from the dictionaries
 function removeClient(peerID) {
     console.log("Removing client:", peerID);
@@ -292,4 +325,64 @@ function removeClient(peerID) {
     }
     delete peerConnections[peerID];
     delete iceCandidates[peerID];
+    delete pendingCandidates[peerID];
+}
+
+// Toggle Audio
+function toggleAudio() {
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        document.getElementById("muteAudioBtn").innerText = audioTrack.enabled ? "Mute Audio" : "Unmute Audio";
+    }
+}
+
+// Toggle Video
+function toggleVideo() {
+    const videoTrack = localStream.getVideoTracks()[0];
+    if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        document.getElementById("muteVideoBtn").innerText = videoTrack.enabled ? "Stop Video" : "Start Video";
+    }
+}
+
+// End Call cleanly without reloading the page
+function endCall() {
+    // 1. Close WebSocket connection
+    if (ws) {
+        ws.close();
+    }
+
+    // 2. Close all WebRTC peer connections
+    for (let peerID in peerConnections) {
+        if (peerConnections[peerID]) {
+            peerConnections[peerID].close();
+        }
+    }
+    peerConnections = {};
+    iceCandidates = {};
+    pendingCandidates = {};
+
+    // 3. Stop local camera/mic stream (turns off webcam light)
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localVideo.srcObject = null;
+    }
+
+    // 4. Clear remote video elements
+    remoteVideoContainer.innerHTML = "";
+
+    // 5. Update UI status badge & turn End Call button into a Rejoin button
+    const badge = document.getElementById("server-badge");
+    if (badge) {
+        badge.innerText = "Status: Disconnected";
+        badge.style.background = "#666";
+    }
+
+    const endBtn = document.getElementById("endCallBtn");
+    if (endBtn) {
+        endBtn.innerText = "Rejoin Call";
+        endBtn.style.background = "#28a745"; // Green
+        endBtn.onclick = () => window.location.reload(); // Reload only when they explicitly want to rejoin
+    }
 }

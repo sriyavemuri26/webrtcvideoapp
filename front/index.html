@@ -62,6 +62,57 @@
             margin-right: 5px;
             max-width: 280px;
         }
+
+        #controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            background-color: #1e1c1c;
+            padding: 12px 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            margin-bottom: 20px;
+        }
+
+        #server-badge {
+            background: #333;
+            color: #fff;
+            padding: 8px 14px;
+            font-size: 13px;
+            font-weight: bold;
+            border-radius: 6px;
+            letter-spacing: 0.5px;
+        }
+
+        #controls button {
+            background-color: #4a4747;
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            font-size: 14px;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s ease, transform 0.1s ease;
+        }
+
+        #controls button:hover {
+            background-color: #5d5959;
+            transform: translateY(-1px);
+        }
+
+        #controls button:active {
+            transform: translateY(0);
+        }
+
+        /* Custom style specifically for the End Call button */
+        #endCallBtn {
+            background-color: #d93838 !important;
+        }
+
+        #endCallBtn:hover {
+            background-color: #e64545 !important;
+        }
     </style>
 </head>
 
@@ -72,6 +123,13 @@
             <video id="localVideo" autoplay muted playsinline></video>
         </div>
         <div id="remoteVideos"></div>
+    </div>
+
+    <div id="controls" style="margin-top: 10px;">
+        <span id="server-badge" style="background: #333; color: #fff; padding: 5px 10px; font-size: 12px; border-radius: 4px;">Server: Connecting...</span>
+        <button id="muteAudioBtn" onclick="toggleAudio()">Mute Audio</button>
+        <button id="muteVideoBtn" onclick="toggleVideo()">Stop Video</button>
+        <button id="endCallBtn" onclick="endCall()" style="background: red; color: white;">End Call</button>
     </div>
 
     <script src="script.js" defer></script>

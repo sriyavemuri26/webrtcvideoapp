@@ -1,5 +1,9 @@
 # WebRTC Video App 
 
+**[Click here to access the live website!](https://webrtc.sriyavemuri.com)**
+
+---
+
 > A real-time, multi-party peer-to-peer video conferencing application built with a lightweight **Go** signaling server, native JavaScript **WebRTC API**, and concurrent **WebSockets**.
 
 ---
